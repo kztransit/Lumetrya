@@ -1,11 +1,11 @@
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = DATABASE_URL
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL")
 }
 
 model SystemConfig {
@@ -72,20 +72,20 @@ model Employee {
 }
 
 model Report {
-  id             String   @id @default(uuid())
-  userId         String
-  user           User     @relation(fields: [userId], references: [id])
-  name           String
-  creationDate   DateTime @default(now())
-  metrics        Json
-  directions     Json
-  netMetrics     Json?
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  name         String
+  creationDate DateTime @default(now())
+  metrics      Json
+  directions   Json
+  netMetrics   Json?
 }
 
 model CommercialProposal {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   userId         String
-  user           User     @relation(fields: [userId], references: [id])
+  user           User      @relation(fields: [userId], references: [id])
   date           DateTime
   direction      String
   proposalNumber String
@@ -189,14 +189,14 @@ model OtherReport {
 }
 
 model AdAuditResult {
-  id          String   @id @default(uuid())
-  userId      String
-  user        User     @relation(fields: [userId], references: [id])
-  keyword     String
-  location    String
-  timestamp   DateTime @default(now())
-  advertisers Json
-  organicTop  Json
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  keyword        String
+  location       String
+  timestamp      DateTime @default(now())
+  advertisers    Json
+  organicTop     Json
   marketAnalysis String
 }
 
