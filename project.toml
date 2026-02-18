@@ -1,0 +1,3 @@
+[[build.env]]
+    name = "GOOGLE_ENTRYPOINT"
+    value = "nginx -g 'daemon off;'"
