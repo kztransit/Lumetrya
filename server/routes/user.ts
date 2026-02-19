@@ -4,7 +4,10 @@ import { prisma } from '../index';
 const router = express.Router();
 
 const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000000';
+
+// SystemConfig keys
 const STRATEGY_KEY = `companyStrategy:${DEFAULT_USER_ID}`;
+const KNOWLEDGE_KEY = `knowledgeBase:${DEFAULT_USER_ID}`;
 
 async function ensureUser() {
     return await prisma.user.upsert({
@@ -99,6 +102,19 @@ router.get('/user-data', async (req, res) => {
         });
         const companyStrategy = strategyRow?.value ?? '';
 
+        // ✅ База знаний в SystemConfig (JSON строка)
+        const kbRow = await prisma.systemConfig.findUnique({
+            where: { key: KNOWLEDGE_KEY },
+        });
+
+        let knowledgeBase: any[] = [];
+        try {
+            knowledgeBase = kbRow?.value ? JSON.parse(kbRow.value) : [];
+            if (!Array.isArray(knowledgeBase)) knowledgeBase = [];
+        } catch {
+            knowledgeBase = [];
+        }
+
         // ВАЖНО: UI ждёт employees внутри companyProfile
         const companyProfile = user.companyProfile
             ? {
@@ -109,7 +125,7 @@ router.get('/user-data', async (req, res) => {
 
         res.json({
             companyProfile,
-            companyStrategy, // ✅ добавили
+            companyStrategy,
             reports: user.reports ?? [],
             proposals: user.proposals ?? [],
             campaigns: user.campaigns ?? [],
@@ -117,7 +133,7 @@ router.get('/user-data', async (req, res) => {
             files: user.files ?? [],
             payments: user.payments ?? [],
             otherReports: user.otherReports ?? [],
-            knowledgeBase: [], // пока не сохраняем
+            knowledgeBase, // ✅ теперь отдаём реальные данные
         });
     } catch (error) {
         console.error('Fetch error:', error);
@@ -143,6 +159,15 @@ router.post('/user-data', async (req, res) => {
                     where: { key: STRATEGY_KEY },
                     update: { value: data.companyStrategy },
                     create: { key: STRATEGY_KEY, value: data.companyStrategy },
+                });
+            }
+
+            // ✅ 0.1) KnowledgeBase (SystemConfig)
+            if (Array.isArray(data.knowledgeBase)) {
+                await tx.systemConfig.upsert({
+                    where: { key: KNOWLEDGE_KEY },
+                    update: { value: JSON.stringify(data.knowledgeBase) },
+                    create: { key: KNOWLEDGE_KEY, value: JSON.stringify(data.knowledgeBase) },
                 });
             }
 
