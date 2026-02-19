@@ -4,6 +4,7 @@ import { prisma } from '../index';
 const router = express.Router();
 
 const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000000';
+const STRATEGY_KEY = `companyStrategy:${DEFAULT_USER_ID}`;
 
 async function ensureUser() {
     return await prisma.user.upsert({
@@ -92,19 +93,23 @@ router.get('/user-data', async (req, res) => {
 
         if (!user) return res.status(404).json({ error: 'User not found' });
 
+        // ✅ Стратегия в SystemConfig
+        const strategyRow = await prisma.systemConfig.findUnique({
+            where: { key: STRATEGY_KEY },
+        });
+        const companyStrategy = strategyRow?.value ?? '';
+
         // ВАЖНО: UI ждёт employees внутри companyProfile
         const companyProfile = user.companyProfile
             ? {
                 ...user.companyProfile,
-                // Prisma хранит employees отдельной связью — отдаём как есть
                 employees: user.companyProfile.employees ?? [],
-                // UI ожидает contacts/details — можно оставить пустыми,
-                // UI нормализует это на фронте (мы уже это сделали в SettingsPage)
             }
             : {};
 
         res.json({
             companyProfile,
+            companyStrategy, // ✅ добавили
             reports: user.reports ?? [],
             proposals: user.proposals ?? [],
             campaigns: user.campaigns ?? [],
@@ -132,6 +137,15 @@ router.post('/user-data', async (req, res) => {
         await ensureUser();
 
         await prisma.$transaction(async (tx) => {
+            // ✅ 0) CompanyStrategy (SystemConfig)
+            if (typeof data.companyStrategy === 'string') {
+                await tx.systemConfig.upsert({
+                    where: { key: STRATEGY_KEY },
+                    update: { value: data.companyStrategy },
+                    create: { key: STRATEGY_KEY, value: data.companyStrategy },
+                });
+            }
+
             // 1) CompanyProfile + Employees
             if (data.companyProfile) {
                 const mapped = mapCompanyProfileFromUI(data.companyProfile);
