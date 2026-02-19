@@ -25,7 +25,7 @@ async function ensureUser() {
 router.get('/user-data', async (req, res) => {
     try {
         await ensureUser();
-        // Указываем тип any для результата запроса, чтобы избежать ошибок TS2339
+
         const user = await prisma.user.findUnique({
             where: { id: DEFAULT_USER_ID },
             include: {
@@ -42,7 +42,6 @@ router.get('/user-data', async (req, res) => {
 
         if (!user) return res.status(404).json({ error: "User not found" });
 
-        // Теперь TypeScript не будет ругаться на отсутствие свойств в объекте user
         res.json({
             companyProfile: user.companyProfile || {},
             reports: user.reports || [],
@@ -74,20 +73,36 @@ router.post('/user-data', async (req, res) => {
         await prisma.$transaction(async (tx: any) => {
             // 1. Профиль компании
             if (data.companyProfile) {
+                const cp = data.companyProfile ?? {};
+
+                // Prisma требует обязательные поля на create — даём дефолт
+                const companyName =
+                    (typeof cp.companyName === "string" && cp.companyName.trim())
+                        ? cp.companyName.trim()
+                        : "—";
+
                 await tx.companyProfile.upsert({
                     where: { userId: DEFAULT_USER_ID },
-                    update: { ...data.companyProfile },
-                    create: { ...data.companyProfile, userId: DEFAULT_USER_ID }
+                    update: {
+                        ...cp,
+                        companyName, // гарантируем строку
+                    },
+                    create: {
+                        ...cp,
+                        userId: DEFAULT_USER_ID,
+                        companyName, // гарантируем строку
+                    }
                 });
             }
 
             // 2. Отчеты
             if (Array.isArray(data.reports)) {
                 await tx.report.deleteMany({ where: { userId: DEFAULT_USER_ID } });
+
                 if (data.reports.length > 0) {
                     await tx.report.createMany({
                         data: data.reports.map((r: any) => {
-                            const { id, createdAt, ...rest } = r; // Удаляем служебные поля Prisma
+                            const { id, createdAt, updatedAt, userId, ...rest } = r; // удаляем служебные поля Prisma
                             return { ...rest, userId: DEFAULT_USER_ID };
                         })
                     });
@@ -97,10 +112,11 @@ router.post('/user-data', async (req, res) => {
             // 3. Коммерческие предложения
             if (Array.isArray(data.proposals)) {
                 await tx.commercialProposal.deleteMany({ where: { userId: DEFAULT_USER_ID } });
+
                 if (data.proposals.length > 0) {
                     await tx.commercialProposal.createMany({
                         data: data.proposals.map((p: any) => {
-                            const { id, ...rest } = p;
+                            const { id, createdAt, updatedAt, userId, ...rest } = p; // удаляем служебные поля Prisma
                             return {
                                 ...rest,
                                 userId: DEFAULT_USER_ID,
@@ -116,10 +132,11 @@ router.post('/user-data', async (req, res) => {
             // 4. Платежи
             if (Array.isArray(data.payments)) {
                 await tx.payment.deleteMany({ where: { userId: DEFAULT_USER_ID } });
+
                 if (data.payments.length > 0) {
                     await tx.payment.createMany({
                         data: data.payments.map((p: any) => {
-                            const { id, ...rest } = p;
+                            const { id, createdAt, updatedAt, userId, ...rest } = p; // удаляем служебные поля Prisma
                             return {
                                 ...rest,
                                 userId: DEFAULT_USER_ID,
@@ -134,15 +151,18 @@ router.post('/user-data', async (req, res) => {
             // 5. Кампании
             if (Array.isArray(data.campaigns)) {
                 await tx.adCampaign.deleteMany({ where: { userId: DEFAULT_USER_ID } });
+
                 if (data.campaigns.length > 0) {
                     await tx.adCampaign.createMany({
                         data: data.campaigns.map((c: any) => {
-                            const { id, ...rest } = c;
+                            const { id, createdAt, updatedAt, userId, ...rest } = c; // удаляем служебные поля Prisma
                             return { ...rest, userId: DEFAULT_USER_ID };
                         })
                     });
                 }
             }
+
+            // Если нужно — добавим сюда links/files/otherReports по аналогии
         });
 
         res.json({ success: true });
