@@ -6,6 +6,8 @@ interface NetConversionsPageProps {
     updateReport: (report: Report) => void;
 }
 
+type DirectionKey = 'rti' | '3d';
+
 const EditModal: React.FC<{
     isOpen: boolean;
     onClose: () => void;
@@ -64,6 +66,125 @@ const clampPercent = (value: number) => {
     return Math.min(Math.max(value, 0), 100);
 };
 
+/**
+ * IMPORTANT:
+ * В проекте метрики уже разделены по направлениям, но на этой странице
+ * раньше использовались "общие" selectedReport.metrics / selectedReport.netMetrics.
+ *
+ * Мы НЕ трогаем типы и структуру данных. Просто аккуратно читаем нужную ветку.
+ * Поддерживаем разные возможные ключи: rti / rtiMetrics, threeD / d3 / printing3d и т.п.
+ */
+function pickDirectionalMetrics(report: Report, direction: DirectionKey) {
+    const anyReport = report as any;
+
+    const metricsRoot =
+        anyReport.metricsByDirection ??
+        anyReport.directionMetrics ??
+        anyReport.metrics ??
+        {};
+
+    // пробуем несколько распространённых ключей
+    const rti =
+        metricsRoot.rti ??
+        metricsRoot.RTI ??
+        metricsRoot.rtiMetrics ??
+        metricsRoot.rti_direction ??
+        null;
+
+    const d3 =
+        metricsRoot.d3 ??
+        metricsRoot.threeD ??
+        metricsRoot.three_d ??
+        metricsRoot.printing3d ??
+        metricsRoot.printing3D ??
+        metricsRoot['3d'] ??
+        metricsRoot.d3Metrics ??
+        null;
+
+    const chosen = direction === 'rti' ? (rti ?? metricsRoot) : (d3 ?? metricsRoot);
+
+    return {
+        leads: Number(chosen?.leads ?? 0),
+        proposals: Number(chosen?.proposals ?? 0),
+        invoices: Number(chosen?.invoices ?? 0),
+        deals: Number(chosen?.deals ?? 0),
+    };
+}
+
+function pickDirectionalQualifiedLeads(report: Report, direction: DirectionKey) {
+    const anyReport = report as any;
+
+    const netRoot =
+        anyReport.netMetricsByDirection ??
+        anyReport.netByDirection ??
+        anyReport.netMetrics ??
+        {};
+
+    const rti =
+        netRoot.rti ??
+        netRoot.RTI ??
+        netRoot.rtiMetrics ??
+        netRoot.rti_direction ??
+        null;
+
+    const d3 =
+        netRoot.d3 ??
+        netRoot.threeD ??
+        netRoot.three_d ??
+        netRoot.printing3d ??
+        netRoot.printing3D ??
+        netRoot['3d'] ??
+        netRoot.d3Metrics ??
+        null;
+
+    // если у тебя netMetrics по-старому (одним полем) — аккуратно читаем и это
+    const fallbackSingle = Number(netRoot?.qualifiedLeads ?? 0);
+
+    const chosen = direction === 'rti' ? rti : d3;
+    const value = chosen?.qualifiedLeads;
+
+    return Number(value ?? fallbackSingle ?? 0);
+}
+
+function setDirectionalQualifiedLeads(report: Report, direction: DirectionKey, value: number): Report {
+    const anyReport = report as any;
+
+    // пытаемся обновить то, что уже есть: netMetricsByDirection / netByDirection / netMetrics.rti / netMetrics.3d
+    const currentNet =
+        anyReport.netMetricsByDirection ??
+        anyReport.netByDirection ??
+        anyReport.netMetrics ??
+        {};
+
+    const nextNet = { ...(currentNet || {}) };
+
+    // если структура уже словарём по направлениям
+    if (nextNet && (nextNet.rti || nextNet.d3 || nextNet.threeD || nextNet.printing3d || nextNet['3d'])) {
+        if (direction === 'rti') {
+            nextNet.rti = { ...(nextNet.rti || {}), qualifiedLeads: value };
+        } else {
+            // нормализуем в один ключ d3, но не ломаем существующие
+            if (nextNet.d3) nextNet.d3 = { ...(nextNet.d3 || {}), qualifiedLeads: value };
+            else if (nextNet.threeD) nextNet.threeD = { ...(nextNet.threeD || {}), qualifiedLeads: value };
+            else if (nextNet.printing3d) nextNet.printing3d = { ...(nextNet.printing3d || {}), qualifiedLeads: value };
+            else if (nextNet['3d']) nextNet['3d'] = { ...(nextNet['3d'] || {}), qualifiedLeads: value };
+            else nextNet.d3 = { qualifiedLeads: value };
+        }
+    } else {
+        // если пока только одно поле (старый вариант) — обновим его, чтобы не сломать
+        nextNet.qualifiedLeads = value;
+    }
+
+    // кладём обратно в тот же контейнер, который был исходно
+    if (anyReport.netMetricsByDirection) {
+        return { ...(report as any), netMetricsByDirection: nextNet } as Report;
+    }
+    if (anyReport.netByDirection) {
+        return { ...(report as any), netByDirection: nextNet } as Report;
+    }
+    return { ...(report as any), netMetrics: nextNet } as Report;
+}
+
 const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
     reports,
     updateReport,
@@ -81,6 +202,9 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
     );
     const [isEditing, setIsEditing] = useState(false);
 
+    // ✅ добавили реальный state направления
+    const [direction, setDirection] = useState<DirectionKey>('rti');
+
     // если список отчетов обновился/поменялся — гарантируем валидный selectedReportId
     useEffect(() => {
         if (sortedReports.length === 0) {
@@ -97,18 +221,22 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
         return sortedReports.find((r) => r.id === selectedReportId) || null;
     }, [sortedReports, selectedReportId]);
 
+    // ✅ теперь читаем метрики ТОЛЬКО по выбранному направлению
     const dataPoints = useMemo(() => {
         if (!selectedReport)
             return { totalLeads: 0, qualified: 0, proposals: 0, invoices: 0, deals: 0 };
-        const m = selectedReport.metrics;
+
+        const m = pickDirectionalMetrics(selectedReport, direction);
+        const qualified = pickDirectionalQualifiedLeads(selectedReport, direction);
+
         return {
             totalLeads: m.leads,
-            qualified: selectedReport.netMetrics?.qualifiedLeads ?? 0,
+            qualified,
             proposals: m.proposals,
             invoices: m.invoices,
             deals: m.deals,
         };
-    }, [selectedReport]);
+    }, [selectedReport, direction]);
 
     const stages = useMemo(() => {
         const { totalLeads, qualified, proposals, invoices, deals } = dataPoints;
@@ -144,28 +272,17 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
         ];
     }, [dataPoints]);
 
+    // ✅ сохраняем qualifiedLeads в разрезе направления (если структура уже раздельная)
     const handleSave = (qualifiedLeadsValue: number) => {
         if (!selectedReport) return;
-        const updatedReport: Report = {
-            ...selectedReport,
-            netMetrics: {
-                ...selectedReport.netMetrics,
-                qualifiedLeads: qualifiedLeadsValue,
-            },
-        };
+        const updatedReport = setDirectionalQualifiedLeads(selectedReport, direction, qualifiedLeadsValue);
         updateReport(updatedReport);
         setIsEditing(false);
     };
 
     const handleDelete = () => {
         if (!selectedReport) return;
-        const updatedReport: Report = {
-            ...selectedReport,
-            netMetrics: {
-                ...selectedReport.netMetrics,
-                qualifiedLeads: 0,
-            },
-        };
+        const updatedReport = setDirectionalQualifiedLeads(selectedReport, direction, 0);
         updateReport(updatedReport);
     };
 
@@ -188,7 +305,8 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
                 isOpen={isEditing}
                 onClose={() => setIsEditing(false)}
                 onSave={handleSave}
-                initialValue={selectedReport?.netMetrics?.qualifiedLeads || 0}
+                // ✅ initialValue теперь тоже из выбранного направления
+                initialValue={selectedReport ? pickDirectionalQualifiedLeads(selectedReport, direction) : 0}
             />
 
             <h1 className="text-4xl font-bold text-slate-900 dark:text-slate-100">
@@ -198,11 +316,24 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
                 Анализ конверсий с квалифицированными лидами
             </p>
 
+            {/* ✅ табы теперь реально переключают направление */}
             <div className="flex items-center space-x-1 bg-white p-1 rounded-lg mb-6 self-start max-w-min">
-                <button className="px-4 py-1.5 rounded-md text-sm font-semibold bg-gray-100 text-slate-800">
+                <button
+                    onClick={() => setDirection('rti')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-semibold ${direction === 'rti'
+                        ? 'bg-gray-100 text-slate-800'
+                        : 'text-slate-500 hover:bg-gray-50'
+                        }`}
+                >
                     Направление РТИ
                 </button>
-                <button className="px-4 py-1.5 rounded-md text-sm font-semibold text-slate-500">
+                <button
+                    onClick={() => setDirection('3d')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-semibold ${direction === '3d'
+                        ? 'bg-gray-100 text-slate-800'
+                        : 'text-slate-500 hover:bg-gray-50'
+                        }`}
+                >
                     Направление 3D
                 </button>
             </div>
