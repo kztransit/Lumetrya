@@ -15,15 +15,14 @@ const EditModal: React.FC<{
     initialValue: number;
 }> = ({ isOpen, onClose, onSave, initialValue }) => {
     const [value, setValue] = useState(initialValue);
+
     useEffect(() => {
         setValue(initialValue);
     }, [initialValue]);
 
     if (!isOpen) return null;
 
-    const handleSaveClick = () => {
-        onSave(value);
-    };
+    const handleSaveClick = () => onSave(value);
 
     return (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
@@ -67,13 +66,40 @@ const clampPercent = (value: number) => {
 };
 
 /**
- * IMPORTANT:
- * В проекте метрики уже разделены по направлениям, но на этой странице
- * раньше использовались "общие" selectedReport.metrics / selectedReport.netMetrics.
+ * Здесь ключевое: "Чистые конверсии" должны брать данные по направлению
+ * (РТИ/3D) так же, как это сделано в остальных разделах.
  *
- * Мы НЕ трогаем типы и структуру данных. Просто аккуратно читаем нужную ветку.
- * Поддерживаем разные возможные ключи: rti / rtiMetrics, threeD / d3 / printing3d и т.п.
+ * Решение:
+ * 1) Переключатель направления влияет на список отчетов (dropdown) — фильтруем отчеты по направлению.
+ * 2) Выбранный отчет берём только из filteredReports.
+ * 3) qualifiedLeads читаем/сохраняем по направлению (если структура раздельная).
+ *
+ * Если в твоих Report есть поле направления (direction/type/...),
+ * этот код перестанет смешивать метрики.
  */
+
+/** пытаемся понять направление отчета по разным возможным полям */
+function getReportDirection(report: Report): DirectionKey | null {
+    const r: any = report;
+
+    const raw =
+        r.direction ??
+        r.businessDirection ??
+        r.department ??
+        r.reportDirection ??
+        r.type ??
+        r.segment ??
+        null;
+
+    const s = String(raw ?? '').toLowerCase();
+
+    if (s.includes('rti') || s.includes('рти')) return 'rti';
+    if (s.includes('3d') || s.includes('three') || s.includes('printing')) return '3d';
+
+    return null;
+}
+
+/** берем метрики из отчета. Если в отчете есть ветки по направлениям — читаем их */
 function pickDirectionalMetrics(report: Report, direction: DirectionKey) {
     const anyReport = report as any;
 
@@ -83,7 +109,6 @@ function pickDirectionalMetrics(report: Report, direction: DirectionKey) {
         anyReport.metrics ??
         {};
 
-    // пробуем несколько распространённых ключей
     const rti =
         metricsRoot.rti ??
         metricsRoot.RTI ??
@@ -137,7 +162,7 @@ function pickDirectionalQualifiedLeads(report: Report, direction: DirectionKey) 
         netRoot.d3Metrics ??
         null;
 
-    // если у тебя netMetrics по-старому (одним полем) — аккуратно читаем и это
+    // если netMetrics пока одним полем
     const fallbackSingle = Number(netRoot?.qualifiedLeads ?? 0);
 
     const chosen = direction === 'rti' ? rti : d3;
@@ -146,10 +171,13 @@ function pickDirectionalQualifiedLeads(report: Report, direction: DirectionKey) 
     return Number(value ?? fallbackSingle ?? 0);
 }
 
-function setDirectionalQualifiedLeads(report: Report, direction: DirectionKey, value: number): Report {
+function setDirectionalQualifiedLeads(
+    report: Report,
+    direction: DirectionKey,
+    value: number
+): Report {
     const anyReport = report as any;
 
-    // пытаемся обновить то, что уже есть: netMetricsByDirection / netByDirection / netMetrics.rti / netMetrics.3d
     const currentNet =
         anyReport.netMetricsByDirection ??
         anyReport.netByDirection ??
@@ -158,24 +186,26 @@ function setDirectionalQualifiedLeads(report: Report, direction: DirectionKey, v
 
     const nextNet = { ...(currentNet || {}) };
 
-    // если структура уже словарём по направлениям
-    if (nextNet && (nextNet.rti || nextNet.d3 || nextNet.threeD || nextNet.printing3d || nextNet['3d'])) {
+    if (
+        nextNet &&
+        (nextNet.rti || nextNet.d3 || nextNet.threeD || nextNet.printing3d || nextNet['3d'])
+    ) {
         if (direction === 'rti') {
             nextNet.rti = { ...(nextNet.rti || {}), qualifiedLeads: value };
         } else {
-            // нормализуем в один ключ d3, но не ломаем существующие
             if (nextNet.d3) nextNet.d3 = { ...(nextNet.d3 || {}), qualifiedLeads: value };
-            else if (nextNet.threeD) nextNet.threeD = { ...(nextNet.threeD || {}), qualifiedLeads: value };
-            else if (nextNet.printing3d) nextNet.printing3d = { ...(nextNet.printing3d || {}), qualifiedLeads: value };
-            else if (nextNet['3d']) nextNet['3d'] = { ...(nextNet['3d'] || {}), qualifiedLeads: value };
+            else if (nextNet.threeD)
+                nextNet.threeD = { ...(nextNet.threeD || {}), qualifiedLeads: value };
+            else if (nextNet.printing3d)
+                nextNet.printing3d = { ...(nextNet.printing3d || {}), qualifiedLeads: value };
+            else if (nextNet['3d'])
+                nextNet['3d'] = { ...(nextNet['3d'] || {}), qualifiedLeads: value };
             else nextNet.d3 = { qualifiedLeads: value };
         }
     } else {
-        // если пока только одно поле (старый вариант) — обновим его, чтобы не сломать
         nextNet.qualifiedLeads = value;
     }
 
-    // кладём обратно в тот же контейнер, который был исходно
     if (anyReport.netMetricsByDirection) {
         return { ...(report as any), netMetricsByDirection: nextNet } as Report;
     }
@@ -185,10 +215,7 @@ function setDirectionalQualifiedLeads(report: Report, direction: DirectionKey, v
     return { ...(report as any), netMetrics: nextNet } as Report;
 }
 
-const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
-    reports,
-    updateReport,
-}) => {
+const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, updateReport }) => {
     const sortedReports = useMemo(() => {
         if (!reports || reports.length === 0) return [];
         return [...reports].sort(
@@ -197,34 +224,50 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
         );
     }, [reports]);
 
-    const [selectedReportId, setSelectedReportId] = useState<string | null>(
-        sortedReports[0]?.id || null
-    );
+    const [direction, setDirection] = useState<DirectionKey>('rti');
     const [isEditing, setIsEditing] = useState(false);
 
-    // ✅ добавили реальный state направления
-    const [direction, setDirection] = useState<DirectionKey>('rti');
+    // ✅ фильтруем отчеты по направлению (это ключевое исправление)
+    const filteredReports = useMemo(() => {
+        if (!sortedReports.length) return [];
+        const onlyDir = sortedReports.filter((r) => getReportDirection(r) === direction);
 
-    // если список отчетов обновился/поменялся — гарантируем валидный selectedReportId
+        // если direction невозможно определить (нет поля direction/type и т.п.) —
+        // не ломаем UI, показываем все (но тогда надо править структуру отчётов).
+        return onlyDir.length ? onlyDir : sortedReports;
+    }, [sortedReports, direction]);
+
+    const [selectedReportId, setSelectedReportId] = useState<string | null>(
+        filteredReports[0]?.id || null
+    );
+
+    // гарантируем валидный selectedReportId при изменении списка
     useEffect(() => {
-        if (sortedReports.length === 0) {
+        if (filteredReports.length === 0) {
             setSelectedReportId(null);
             return;
         }
-        const exists = sortedReports.some((r) => r.id === selectedReportId);
+        const exists = filteredReports.some((r) => r.id === selectedReportId);
         if (!selectedReportId || !exists) {
-            setSelectedReportId(sortedReports[0].id);
+            setSelectedReportId(filteredReports[0].id);
         }
-    }, [sortedReports, selectedReportId]);
+    }, [filteredReports, selectedReportId]);
+
+    // ✅ при смене направления — переключаемся на первый отчёт этого направления
+    useEffect(() => {
+        if (filteredReports.length) {
+            setSelectedReportId(filteredReports[0].id);
+        }
+    }, [direction, filteredReports]);
 
     const selectedReport = useMemo(() => {
-        return sortedReports.find((r) => r.id === selectedReportId) || null;
-    }, [sortedReports, selectedReportId]);
+        return filteredReports.find((r) => r.id === selectedReportId) || null;
+    }, [filteredReports, selectedReportId]);
 
-    // ✅ теперь читаем метрики ТОЛЬКО по выбранному направлению
     const dataPoints = useMemo(() => {
-        if (!selectedReport)
+        if (!selectedReport) {
             return { totalLeads: 0, qualified: 0, proposals: 0, invoices: 0, deals: 0 };
+        }
 
         const m = pickDirectionalMetrics(selectedReport, direction);
         const qualified = pickDirectionalQualifiedLeads(selectedReport, direction);
@@ -272,10 +315,13 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
         ];
     }, [dataPoints]);
 
-    // ✅ сохраняем qualifiedLeads в разрезе направления (если структура уже раздельная)
     const handleSave = (qualifiedLeadsValue: number) => {
         if (!selectedReport) return;
-        const updatedReport = setDirectionalQualifiedLeads(selectedReport, direction, qualifiedLeadsValue);
+        const updatedReport = setDirectionalQualifiedLeads(
+            selectedReport,
+            direction,
+            qualifiedLeadsValue
+        );
         updateReport(updatedReport);
         setIsEditing(false);
     };
@@ -305,8 +351,9 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
                 isOpen={isEditing}
                 onClose={() => setIsEditing(false)}
                 onSave={handleSave}
-                // ✅ initialValue теперь тоже из выбранного направления
-                initialValue={selectedReport ? pickDirectionalQualifiedLeads(selectedReport, direction) : 0}
+                initialValue={
+                    selectedReport ? pickDirectionalQualifiedLeads(selectedReport, direction) : 0
+                }
             />
 
             <h1 className="text-4xl font-bold text-slate-900 dark:text-slate-100">
@@ -316,7 +363,6 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
                 Анализ конверсий с квалифицированными лидами
             </p>
 
-            {/* ✅ табы теперь реально переключают направление */}
             <div className="flex items-center space-x-1 bg-white p-1 rounded-lg mb-6 self-start max-w-min">
                 <button
                     onClick={() => setDirection('rti')}
@@ -349,7 +395,7 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
                             onChange={(e) => setSelectedReportId(e.target.value)}
                             className="bg-gray-100 p-2.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 w-full md:w-auto"
                         >
-                            {sortedReports.map((r) => (
+                            {filteredReports.map((r) => (
                                 <option key={r.id} value={r.id}>
                                     {r.name}
                                 </option>
@@ -397,7 +443,6 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({
                                             </p>
                                         </div>
 
-                                        {/* FIX: не даём полоске выходить за 100% */}
                                         <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
                                             <div
                                                 className="bg-purple-600 h-2.5 rounded-full"
