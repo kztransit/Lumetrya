@@ -6,7 +6,8 @@ interface NetConversionsPageProps {
     updateReport: (report: Report) => void;
 }
 
-type DirectionKey = 'rti' | '3d';
+// UI-ключи направлений в твоих данных:
+type DirectionLabel = 'РТИ' | '3D';
 
 const EditModal: React.FC<{
     isOpen: boolean;
@@ -29,7 +30,9 @@ const EditModal: React.FC<{
                     <h2 className="text-xl font-bold">Редактировать чистые конверсии</h2>
                 </div>
                 <div className="p-6">
-                    <label className="text-sm text-slate-500 block mb-1">Квалифицированные лиды</label>
+                    <label className="text-sm text-slate-500 block mb-1">
+                        Квалифицированные лиды
+                    </label>
                     <input
                         type="number"
                         value={value}
@@ -61,196 +64,61 @@ const clampPercent = (value: number) => {
     return Math.min(Math.max(value, 0), 100);
 };
 
-/** нормализуем ключ, чтобы матчить leadsRTI / leads_rti / rtiLeads / leads3D и т.д. */
-function normKey(k: string) {
-    return k.toLowerCase().replace(/[^a-z0-9]/g, '');
+const EMPTY_DIR_METRICS = {
+    budget: 0,
+    clicks: 0,
+    leads: 0,
+    proposals: 0,
+    invoices: 0,
+    deals: 0,
+    sales: 0,
+};
+
+function getDirectionMetrics(report: Report, direction: DirectionLabel) {
+    const r: any = report;
+    const dir = (r.directions?.[direction] ?? EMPTY_DIR_METRICS) as any;
+
+    return {
+        leads: Number(dir.leads ?? 0),
+        proposals: Number(dir.proposals ?? 0),
+        invoices: Number(dir.invoices ?? 0),
+        deals: Number(dir.deals ?? 0),
+    };
 }
 
-/** пытаемся найти числовое поле по набору токенов (например: ['lead','leads'] + ['rti']) */
-function findNumberByTokens(obj: any, tokens: string[]): number | null {
-    if (!obj || typeof obj !== 'object') return null;
-
-    const keys = Object.keys(obj);
-    const want = tokens.map(normKey);
-
-    for (const key of keys) {
-        const nk = normKey(key);
-        const ok = want.every(t => nk.includes(t));
-        if (!ok) continue;
-
-        const v = obj[key];
-        const n = Number(v);
-        if (Number.isFinite(n)) return n;
-    }
-    return null;
-}
-
-/** достаем метрики по направлению:
- *  1) сначала ищем вложенные ветки metrics.rti / metrics.3d / metrics.printing3d и т.п.
- *  2) если нет — ищем плоские поля leadsRTI/leads3D, proposalsRTI/proposals3D и т.п.
- *  3) если и так нет — фоллбек на общий metrics
+/**
+ * qualifiedLeads храним в report.directions[direction].qualifiedLeads
+ * (с fallback на старый report.netMetrics.qualifiedLeads, если еще не было разнесено)
  */
-function pickDirectionalMetrics(report: Report, direction: DirectionKey) {
+function getQualifiedLeads(report: Report, direction: DirectionLabel) {
+    const r: any = report;
+    const fromDirections = r.directions?.[direction]?.qualifiedLeads;
+
+    const n1 = Number(fromDirections);
+    if (Number.isFinite(n1)) return n1;
+
+    const legacy = Number(r.netMetrics?.qualifiedLeads ?? 0);
+    return Number.isFinite(legacy) ? legacy : 0;
+}
+
+function setQualifiedLeads(report: Report, direction: DirectionLabel, value: number): Report {
     const r: any = report;
 
-    const metricsRoot =
-        r.metricsByDirection ??
-        r.directionMetrics ??
-        r.metrics ??
-        {};
+    const nextDirections = { ...(r.directions ?? {}) };
+    const currentDir = nextDirections[direction] ?? { ...EMPTY_DIR_METRICS };
 
-    // 1) nested-ветки
-    const nestedRTI =
-        metricsRoot.rti ??
-        metricsRoot.RTI ??
-        metricsRoot.rtiMetrics ??
-        metricsRoot.rti_direction ??
-        null;
-
-    const nested3D =
-        metricsRoot.d3 ??
-        metricsRoot.threeD ??
-        metricsRoot.three_d ??
-        metricsRoot.printing3d ??
-        metricsRoot.printing3D ??
-        metricsRoot['3d'] ??
-        metricsRoot.d3Metrics ??
-        null;
-
-    const nested = direction === 'rti' ? nestedRTI : nested3D;
-    const base = nested ?? metricsRoot;
-
-    // если nested найден и в нем есть нормальные поля — используем напрямую
-    const direct = {
-        leads: Number(base?.leads ?? NaN),
-        proposals: Number(base?.proposals ?? NaN),
-        invoices: Number(base?.invoices ?? NaN),
-        deals: Number(base?.deals ?? NaN),
+    nextDirections[direction] = {
+        ...currentDir,
+        qualifiedLeads: value,
     };
 
-    const hasDirect =
-        Number.isFinite(direct.leads) ||
-        Number.isFinite(direct.proposals) ||
-        Number.isFinite(direct.invoices) ||
-        Number.isFinite(direct.deals);
-
-    // 2) flat-поля (leadsRTI, rtiLeads, leads_3d, proposals3D, invoicesRTI, deals3D, ...)
-    const dirToken = direction === 'rti' ? 'rti' : '3d';
-
-    const leads =
-        (hasDirect && Number.isFinite(direct.leads) ? direct.leads : null) ??
-        findNumberByTokens(metricsRoot, ['leads', dirToken]) ??
-        findNumberByTokens(metricsRoot, ['lead', dirToken]) ??
-        findNumberByTokens(metricsRoot, [dirToken, 'leads']) ??
-        findNumberByTokens(metricsRoot, [dirToken, 'lead']) ??
-        0;
-
-    const proposals =
-        (hasDirect && Number.isFinite(direct.proposals) ? direct.proposals : null) ??
-        findNumberByTokens(metricsRoot, ['proposals', dirToken]) ??
-        findNumberByTokens(metricsRoot, ['proposal', dirToken]) ??
-        findNumberByTokens(metricsRoot, ['kp', dirToken]) ??
-        findNumberByTokens(metricsRoot, [dirToken, 'proposals']) ??
-        findNumberByTokens(metricsRoot, [dirToken, 'kp']) ??
-        0;
-
-    const invoices =
-        (hasDirect && Number.isFinite(direct.invoices) ? direct.invoices : null) ??
-        findNumberByTokens(metricsRoot, ['invoices', dirToken]) ??
-        findNumberByTokens(metricsRoot, ['invoice', dirToken]) ??
-        findNumberByTokens(metricsRoot, [dirToken, 'invoices']) ??
-        0;
-
-    const deals =
-        (hasDirect && Number.isFinite(direct.deals) ? direct.deals : null) ??
-        findNumberByTokens(metricsRoot, ['deals', dirToken]) ??
-        findNumberByTokens(metricsRoot, ['deal', dirToken]) ??
-        findNumberByTokens(metricsRoot, [dirToken, 'deals']) ??
-        0;
-
-    return { leads, proposals, invoices, deals };
-}
-
-function pickDirectionalQualifiedLeads(report: Report, direction: DirectionKey) {
-    const r: any = report;
-
-    const netRoot =
-        r.netMetricsByDirection ??
-        r.netByDirection ??
-        r.netMetrics ??
-        {};
-
-    // nested
-    const nestedRTI =
-        netRoot.rti ??
-        netRoot.RTI ??
-        netRoot.rtiMetrics ??
-        netRoot.rti_direction ??
-        null;
-
-    const nested3D =
-        netRoot.d3 ??
-        netRoot.threeD ??
-        netRoot.three_d ??
-        netRoot.printing3d ??
-        netRoot.printing3D ??
-        netRoot['3d'] ??
-        netRoot.d3Metrics ??
-        null;
-
-    const nested = direction === 'rti' ? nestedRTI : nested3D;
-
-    // прямое поле внутри ветки
-    const direct = nested?.qualifiedLeads;
-    if (Number.isFinite(Number(direct))) return Number(direct);
-
-    // flat-поля: qualifiedLeadsRTI / qualifiedRTI / rtiQualifiedLeads / qualifiedLeads3D ...
-    const dirToken = direction === 'rti' ? 'rti' : '3d';
-
-    const flat =
-        findNumberByTokens(netRoot, ['qualifiedleads', dirToken]) ??
-        findNumberByTokens(netRoot, ['qualified', dirToken]) ??
-        findNumberByTokens(netRoot, [dirToken, 'qualifiedleads']) ??
-        findNumberByTokens(netRoot, [dirToken, 'qualified']) ??
-        null;
-
-    if (flat !== null) return flat;
-
-    // fallback старый общий вариант (если у тебя вообще одно поле)
-    const fallbackSingle = Number(netRoot?.qualifiedLeads ?? 0);
-    return Number.isFinite(fallbackSingle) ? fallbackSingle : 0;
-}
-
-function setDirectionalQualifiedLeads(report: Report, direction: DirectionKey, value: number): Report {
-    const r: any = report;
-
-    const currentNet =
-        r.netMetricsByDirection ??
-        r.netByDirection ??
-        r.netMetrics ??
-        {};
-
-    const nextNet = { ...(currentNet || {}) };
-
-    // если структура словарём по направлениям
-    if (nextNet && (nextNet.rti || nextNet.d3 || nextNet.threeD || nextNet.printing3d || nextNet['3d'])) {
-        if (direction === 'rti') {
-            nextNet.rti = { ...(nextNet.rti || {}), qualifiedLeads: value };
-        } else {
-            if (nextNet.d3) nextNet.d3 = { ...(nextNet.d3 || {}), qualifiedLeads: value };
-            else if (nextNet.threeD) nextNet.threeD = { ...(nextNet.threeD || {}), qualifiedLeads: value };
-            else if (nextNet.printing3d) nextNet.printing3d = { ...(nextNet.printing3d || {}), qualifiedLeads: value };
-            else if (nextNet['3d']) nextNet['3d'] = { ...(nextNet['3d'] || {}), qualifiedLeads: value };
-            else nextNet.d3 = { qualifiedLeads: value };
-        }
-    } else {
-        // flat fallback
-        nextNet.qualifiedLeads = value;
-    }
-
-    if (r.netMetricsByDirection) return { ...(report as any), netMetricsByDirection: nextNet } as Report;
-    if (r.netByDirection) return { ...(report as any), netByDirection: nextNet } as Report;
-    return { ...(report as any), netMetrics: nextNet } as Report;
+    // ВАЖНО: не трогаем report.metrics, чтобы не ломать другие разделы.
+    // Можно (опционально) оставить legacy поле, но лучше не мешать:
+    // r.netMetrics?.qualifiedLeads — будет просто fallback’ом.
+    return {
+        ...(report as any),
+        directions: nextDirections,
+    } as Report;
 }
 
 const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, updateReport }) => {
@@ -261,14 +129,13 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, update
         );
     }, [reports]);
 
-    const [direction, setDirection] = useState<DirectionKey>('rti');
+    const [direction, setDirection] = useState<DirectionLabel>('РТИ');
     const [isEditing, setIsEditing] = useState(false);
 
     const [selectedReportId, setSelectedReportId] = useState<string | null>(
         sortedReports[0]?.id || null
     );
 
-    // если список отчетов обновился/поменялся — гарантируем валидный selectedReportId
     useEffect(() => {
         if (sortedReports.length === 0) {
             setSelectedReportId(null);
@@ -289,8 +156,8 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, update
             return { totalLeads: 0, qualified: 0, proposals: 0, invoices: 0, deals: 0 };
         }
 
-        const m = pickDirectionalMetrics(selectedReport, direction);
-        const qualified = pickDirectionalQualifiedLeads(selectedReport, direction);
+        const m = getDirectionMetrics(selectedReport, direction);
+        const qualified = getQualifiedLeads(selectedReport, direction);
 
         return {
             totalLeads: m.leads,
@@ -337,14 +204,14 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, update
 
     const handleSave = (qualifiedLeadsValue: number) => {
         if (!selectedReport) return;
-        const updatedReport = setDirectionalQualifiedLeads(selectedReport, direction, qualifiedLeadsValue);
+        const updatedReport = setQualifiedLeads(selectedReport, direction, qualifiedLeadsValue);
         updateReport(updatedReport);
         setIsEditing(false);
     };
 
     const handleDelete = () => {
         if (!selectedReport) return;
-        const updatedReport = setDirectionalQualifiedLeads(selectedReport, direction, 0);
+        const updatedReport = setQualifiedLeads(selectedReport, direction, 0);
         updateReport(updatedReport);
     };
 
@@ -363,7 +230,7 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, update
                 isOpen={isEditing}
                 onClose={() => setIsEditing(false)}
                 onSave={handleSave}
-                initialValue={selectedReport ? pickDirectionalQualifiedLeads(selectedReport, direction) : 0}
+                initialValue={selectedReport ? getQualifiedLeads(selectedReport, direction) : 0}
             />
 
             <h1 className="text-4xl font-bold text-slate-900 dark:text-slate-100">Чистые конверсии</h1>
@@ -371,15 +238,15 @@ const NetConversionsPage: React.FC<NetConversionsPageProps> = ({ reports, update
 
             <div className="flex items-center space-x-1 bg-white p-1 rounded-lg mb-6 self-start max-w-min">
                 <button
-                    onClick={() => setDirection('rti')}
-                    className={`px-4 py-1.5 rounded-md text-sm font-semibold ${direction === 'rti' ? 'bg-gray-100 text-slate-800' : 'text-slate-500 hover:bg-gray-50'
+                    onClick={() => setDirection('РТИ')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-semibold ${direction === 'РТИ' ? 'bg-gray-100 text-slate-800' : 'text-slate-500 hover:bg-gray-50'
                         }`}
                 >
                     Направление РТИ
                 </button>
                 <button
-                    onClick={() => setDirection('3d')}
-                    className={`px-4 py-1.5 rounded-md text-sm font-semibold ${direction === '3d' ? 'bg-gray-100 text-slate-800' : 'text-slate-500 hover:bg-gray-50'
+                    onClick={() => setDirection('3D')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-semibold ${direction === '3D' ? 'bg-gray-100 text-slate-800' : 'text-slate-500 hover:bg-gray-50'
                         }`}
                 >
                     Направление 3D
