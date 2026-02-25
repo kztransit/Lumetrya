@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Report } from '../types';
@@ -225,6 +224,33 @@ const monthNames = [
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
 ];
 
+// ✅ Новая маленькая утилита: формируем дату периода без Date/toISOString (чтобы не было сдвига UTC)
+const toPeriodDateString = (year: number, month: number) => {
+    return `${year}-${String(month).padStart(2, '0')}-01`;
+};
+
+// ✅ Стабильный парсинг даты периода без UTC-сдвига
+// Поддерживает 'YYYY-MM-DD' и 'YYYY-MM-DD HH:mm:ss' (как в Supabase)
+const parsePeriodDate = (value: any): Date => {
+    if (!value) return new Date(1970, 0, 1);
+
+    if (value instanceof Date && !isNaN(value.getTime())) return value;
+
+    const s = String(value).trim();
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) {
+        const y = Number(m[1]);
+        const mo = Number(m[2]);
+        const d = Number(m[3]);
+        return new Date(y, mo - 1, d); // локальная календарная дата
+    }
+
+    const dt = new Date(s);
+    if (!isNaN(dt.getTime())) return dt;
+
+    return new Date(1970, 0, 1);
+};
+
 const CreateReportManual: React.FC<{ onBack: () => void, onSave: (report: Omit<Report, 'id'>) => void, reports: Report[] }> = ({ onBack, onSave, reports }) => {
     const [month, setMonth] = useState(new Date().getMonth() + 1);
     const [year, setYear] = useState(new Date().getFullYear());
@@ -245,7 +271,6 @@ const CreateReportManual: React.FC<{ onBack: () => void, onSave: (report: Omit<R
     };
 
     const allMetricKeys = Object.keys(metricLabels) as (keyof Report['metrics'])[];
-
 
     const handleFormChange = (direction: 'РТИ' | '3D', metric: keyof Report['metrics'], value: string) => {
         setFormMetrics(prev => ({
@@ -276,11 +301,12 @@ const CreateReportManual: React.FC<{ onBack: () => void, onSave: (report: Omit<R
             return;
         }
 
-        const reportDate = new Date(year, month - 1, 1);
+        // ✅ ВАЖНО: дата периода без UTC-сдвига
+        const creationDate = toPeriodDateString(year, month);
 
         const newReport: Omit<Report, 'id'> = {
             name: reportName,
-            creationDate: reportDate.toISOString().split('T')[0],
+            creationDate,
             metrics: totals,
             directions: formMetrics
         };
@@ -433,7 +459,9 @@ const CreateReportUpload: React.FC<{ onBack: () => void, onSave: (report: Omit<R
             return;
         }
 
-        const reportDate = new Date(year, month - 1, 1).toISOString().split('T')[0];
+        // ✅ ВАЖНО: дата периода без UTC-сдвига
+        const creationDate = toPeriodDateString(year, month);
+
         const rtiMetrics = parsedDirections['РТИ'];
         const d3Metrics = parsedDirections['3D'];
 
@@ -442,7 +470,7 @@ const CreateReportUpload: React.FC<{ onBack: () => void, onSave: (report: Omit<R
             return acc;
         }, {} as Report['metrics']);
 
-        onSave({ name: reportName, creationDate: reportDate, metrics: totalMetrics, directions: parsedDirections });
+        onSave({ name: reportName, creationDate, metrics: totalMetrics, directions: parsedDirections });
     };
 
     return (
@@ -515,7 +543,6 @@ const CreateReportUpload: React.FC<{ onBack: () => void, onSave: (report: Omit<R
     )
 };
 
-
 const ReportsPage: React.FC<ReportsPageProps> = ({ reports, addReport, deleteReport, updateReport }) => {
     const location = useLocation();
     const navigate = useNavigate();
@@ -535,8 +562,11 @@ const ReportsPage: React.FC<ReportsPageProps> = ({ reports, addReport, deleteRep
         }
     }, [location.state, navigate]);
 
+    // ✅ Стабильная сортировка по периоду (поддерживает Supabase 'YYYY-MM-DD HH:mm:ss')
     const sortedReports = useMemo(() => {
-        return [...reports].sort((a, b) => new Date(b.creationDate).getTime() - new Date(a.creationDate).getTime());
+        return [...reports].sort(
+            (a, b) => parsePeriodDate(b.creationDate).getTime() - parsePeriodDate(a.creationDate).getTime()
+        );
     }, [reports]);
 
     const handleOpenReport = (report: Report) => {
